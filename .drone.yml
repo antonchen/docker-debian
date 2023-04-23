@@ -1,0 +1,62 @@
+kind: pipeline
+name: debian
+
+steps:
+- name: build debian testing
+  environment:
+    DOCKER_BUILDKIT: 1
+  image: plugins/docker
+  privileged: true
+  volumes:
+  - name: data
+    path: /drone
+  settings:
+    storage_path: /drone/docker-storage
+    mirror: http://mirror.docker.local
+    custom_dns: 10.0.0.254
+    username:
+      from_secret: docker_username
+    password:
+      from_secret: docker_password
+    repo: antonhub/debian
+    build_args:
+    - REL=testing
+    - ARCH=amd64
+    - MIRROR_DOMAIN=mirrors.tuna.tsinghua.edu.cn
+    tags:
+    - testing
+
+- name: build debian bullseye
+  environment:
+    DOCKER_BUILDKIT: 1
+  image: plugins/docker
+  privileged: true
+  volumes:
+  - name: data
+    path: /drone
+  settings:
+    storage_path: /drone/docker-storage
+    mirror: http://mirror.docker.local
+    custom_dns: 10.0.0.254
+    username:
+      from_secret: docker_username
+    password:
+      from_secret: docker_password
+    repo: antonhub/debian
+    build_args:
+    - REL=bullseye
+    - ARCH=amd64
+    - MIRROR_DOMAIN=mirrors.tuna.tsinghua.edu.cn
+    tags:
+    - bullseye
+
+trigger:
+  branch:
+  - main
+  event:
+  - push
+
+volumes:
+- name: data
+  host:
+    path: /storage/drone-runner-docker

@@ -1,0 +1,30 @@
+#!/usr/bin/with-contenv bash
+# shellcheck shell=bash
+RUNUSER=${RUNUSER:-debian}
+PUID=${PUID:-5900}
+PGID=${PGID:-5900}
+
+if ! id -u $RUNUSER >/dev/null 2>&1; then
+    useradd -u $PUID -U -d /config -s /bin/false $RUNUSER 2>/dev/null
+    usermod -G users $RUNUSER
+fi
+
+groupmod -o -g "$PGID" $RUNUSER
+usermod -o -u "$PUID" $RUNUSER
+
+if [ -f /etc/s6-overlay/s6-rc.d/init-adduser/branding ]; then
+    cat /etc/s6-overlay/s6-rc.d/init-adduser/branding
+fi
+
+echo "
+───────────────────────────────────────
+GID/UID
+───────────────────────────────────────
+User UID:    $(id -u $RUNUSER)
+User GID:    $(id -g $RUNUSER)
+───────────────────────────────────────"
+
+lsiown $RUNUSER:$RUNUSER /app
+lsiown $RUNUSER:$RUNUSER /config
+lsiown $RUNUSER:$RUNUSER /defaults
+

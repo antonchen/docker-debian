@@ -1,0 +1,166 @@
+#!/command/with-contenv bash
+# shellcheck shell=bash
+# Forked from linuxserver/docker-mods
+
+# Version 3
+# 2022-09-25
+MOD_SCRIPT_VER="3"
+
+# Use /command/with-contenv shebang because /usr/bin/with-contenv is created in this script
+
+# Define custom folder paths
+SCRIPTS_DIR="/custom-cont-init.d"
+SERVICES_DIR="/custom-services.d"
+
+# Set executable bit on cont-init and services built into the image
+set_legacy_executable_bits() {
+    mkdir -p /etc/{cont-init.d,services.d}
+    chmod +x \
+        /etc/cont-init.d/* \
+        /etc/services.d/*/* 2>/dev/null || true
+}
+
+tamper_check() {
+    # Tamper check custom service locations
+    if [[ -d "${SERVICES_DIR}" ]] && [[ -n "$(find ${SERVICES_DIR}/* ! -user root 2>/dev/null)" ]]; then
+echo "╔═════════════════════════════════════════════════════════════════════════╗
+║                                                                         ║
+║        Some of the contents of the folder ${SERVICES_DIR}            ║
+║            are not owned by root, which is a security risk.             ║
+║                                                                         ║
+║  Please review the permissions of this folder and its contents to make  ║
+║     sure they are owned by root, and can only be modified by root.      ║
+║                                                                         ║
+╚═════════════════════════════════════════════════════════════════════════╝"
+    elif [[ -d "${SERVICES_DIR}" ]] && [[ -n "$(find ${SERVICES_DIR}/* -perm -o+w 2>/dev/null)" ]]; then
+echo "╔═════════════════════════════════════════════════════════════════════════╗
+║                                                                         ║
+║        Some of the contents of the folder ${SERVICES_DIR}            ║
+║      have write permissions for others, which is a security risk.       ║
+║                                                                         ║
+║  Please review the permissions of this folder and its contents to make  ║
+║     sure they are owned by root, and can only be modified by root.      ║
+║                                                                         ║
+╚═════════════════════════════════════════════════════════════════════════╝"
+    fi
+    # Tamper check custom script locations
+    if [[ -d "${SCRIPTS_DIR}" ]] && [[ -n "$(find ${SCRIPTS_DIR}/* ! -user root 2>/dev/null)" ]]; then
+echo "╔═════════════════════════════════════════════════════════════════════════╗
+║                                                                         ║
+║        Some of the contents of the folder ${SCRIPTS_DIR}           ║
+║            are not owned by root, which is a security risk.             ║
+║                                                                         ║
+║  Please review the permissions of this folder and its contents to make  ║
+║     sure they are owned by root, and can only be modified by root.      ║
+║                                                                         ║
+╚═════════════════════════════════════════════════════════════════════════╝"
+    elif [[ -d "${SCRIPTS_DIR}" ]] && [[ -n "$(find ${SCRIPTS_DIR}/* -perm -o+w 2>/dev/null)" ]]; then
+echo "╔═════════════════════════════════════════════════════════════════════════╗
+║                                                                         ║
+║        Some of the contents of the folder ${SCRIPTS_DIR}           ║
+║      have write permissions for others, which is a security risk.       ║
+║                                                                         ║
+║  Please review the permissions of this folder and its contents to make  ║
+║     sure they are owned by root, and can only be modified by root.      ║
+║                                                                         ║
+╚═════════════════════════════════════════════════════════════════════════╝"
+    fi
+}
+
+process_custom_services() {
+    # Remove all existing custom services before continuing to ensure
+    # we aren't running anything the user may have removed
+    if [[ -n "$(/bin/ls -A /etc/s6-overlay/s6-rc.d/custom-svc-* 2>/dev/null)" ]]; then
+        echo "[custom-init] removing existing custom services..."
+        rm -rf /etc/s6-overlay/s6-rc.d/custom-svc-*
+        rm /etc/s6-overlay/s6-rc.d/user/contents.d/custom-svc-*
+    fi
+
+    # Make sure custom service directory exists and has files in it
+    if [[ -e "${SERVICES_DIR}" ]] && [[ -n "$(/bin/ls -A ${SERVICES_DIR} 2>/dev/null)" ]]; then
+        echo "[custom-init] Service files found in ${SERVICES_DIR}"
+        for SERVICE in "${SERVICES_DIR}"/*; do
+            NAME="$(basename "${SERVICE}")"
+            if [[ -f "${SERVICE}" ]]; then
+                echo "[custom-init] ${NAME}: service detected, copying..."
+                mkdir -p /etc/s6-overlay/s6-rc.d/custom-svc-"${NAME}"/dependencies.d/
+                cp "${SERVICE}" /etc/s6-overlay/s6-rc.d/custom-svc-"${NAME}"/run
+                chmod +x /etc/s6-overlay/s6-rc.d/custom-svc-"${NAME}"/run
+                echo "longrun" >/etc/s6-overlay/s6-rc.d/custom-svc-"${NAME}"/type
+                touch /etc/s6-overlay/s6-rc.d/custom-svc-"${NAME}"/dependencies.d/init-services
+                touch /etc/s6-overlay/s6-rc.d/user/contents.d/custom-svc-"${NAME}"
+                echo "[custom-init] ${NAME}: copied"
+            elif [[ ! -f "${SERVICE}" ]]; then
+                echo "[custom-init] ${NAME}: is not a file"
+            fi
+        done
+    else
+        echo "[custom-init] No custom services found, skipping..."
+    fi
+}
+
+# Create our noisy chown alias to handle read-only/remote volumes
+create_lsiown_alias() {
+    # intentional tabs in the heredoc
+    cat <<-EOF >/usr/bin/lsiown
+	#!/bin/bash
+	chown "\$@" || printf '**** Permissions could not be set. This is probably because your volume mounts are remote or read-only. ****\n**** The app may not work properly and we will not provide support for it. ****\n'
+	EOF
+    chmod +x /usr/bin/lsiown
+}
+
+# Create our with-contenv alias with umask support
+create_with_contenv_alias() {
+    if [[ ! -f /command/with-contenv ]]; then
+        echo "[mod-init] /command/with-contenv not found, skipping alias creation"
+        return
+    fi
+    rm -rf /usr/bin/with-contenv
+    # intentional tabs in the heredoc
+    cat <<-EOF >/usr/bin/with-contenv
+	#!/bin/bash
+	if [[ -f /run/s6/container_environment/UMASK ]] &&
+	    { [[ "\$(pwdx \$\$)" =~ "/run/s6/legacy-services/" ]] ||
+	        [[ "\$(pwdx \$\$)" =~ "/run/s6/services/" ]] ||
+	        [[ "\$(pwdx \$\$)" =~ "/servicedirs/svc-" ]]; }; then
+	    umask "\$(cat /run/s6/container_environment/UMASK)"
+	fi
+	exec /command/with-contenv "\$@"
+	EOF
+    chmod +x /usr/bin/with-contenv
+}
+
+run_branding() {
+  # intentional tabs in the heredoc
+  cat <<-EOF >/etc/s6-overlay/s6-rc.d/init-adduser/branding
+	──────────────────────────────────
+
+        ╦═╗┌─┐┬ ┬╦  ┌─┐┌┐ 
+        ╠╦╝├─┤│││║  ├─┤├┴┐
+        ╩╚═┴ ┴└┴┘╩═╝┴ ┴└─┘
+
+	──────────────────────────────────
+	EOF
+}
+
+# Run alias creation functions
+create_lsiown_alias
+create_with_contenv_alias
+
+# Main script loop
+
+if [[ ${S6_VERBOSITY} -ge 2 ]]; then
+    echo "[mod-init] Version ${MOD_SCRIPT_VER}"
+fi
+
+if [[ -d "${SCRIPTS_DIR}" ]] || [[ -d "${SERVICES_DIR}" ]]; then
+    tamper_check
+    process_custom_services
+fi
+
+if [[ "${FIRST_PARTY}" = "true" ]]; then
+    run_branding
+fi
+
+# Set executable bit on legacy cont-init and services built into the image and anything legacy unpacked by mods
+set_legacy_executable_bits
